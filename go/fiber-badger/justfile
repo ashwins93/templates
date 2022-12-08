@@ -1,0 +1,9 @@
+build:
+  go build -o bin/www .
+
+run:
+  go run main.go
+
+start:
+  ./bin/www
+
