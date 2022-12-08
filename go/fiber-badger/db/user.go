@@ -2,17 +2,17 @@ package db
 
 import (
 	"encoding/gob"
-	"errors"
 	"fmt"
 
 	"github.com/ashwins93/fiber-badger/utils"
 	"github.com/dgraph-io/badger/v3"
+	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type User struct {
 	Username     string `json:"username"`
-	PasswordHash string
+	PasswordHash string `json:"-"`
 	FirstName    string `json:"firstName"`
 	LastName     string `json:"lastName"`
 }
@@ -35,7 +35,7 @@ func (q *Queries) CreateNewUser(data *CreateUserParams) (*User, error) {
 		_, err := txn.Get(key)
 
 		if err == nil {
-			return errors.New("username has already been taken")
+			return fiber.NewError(fiber.StatusBadRequest, "Username already taken")
 		} else if err != nil && err != badger.ErrKeyNotFound {
 			return err
 		}
@@ -66,15 +66,16 @@ func (q *Queries) CreateNewUser(data *CreateUserParams) (*User, error) {
 }
 
 func (q *Queries) GetAllUsers() ([]*User, error) {
-	var users []*User
+	users := make([]*User, 0)
+	prefix := []byte("user/")
 	err := q.db.View(func(txn *badger.Txn) error {
 		it := txn.NewIterator(badger.IteratorOptions{
 			PrefetchSize: 10,
-			Prefix:       []byte("users/"),
+			Prefix:       prefix,
 		})
 		defer it.Close()
 
-		for ; it.Valid(); it.Next() {
+		for it.Seek(prefix); it.Valid(); it.Next() {
 			item := it.Item()
 			err := item.Value(func(v []byte) error {
 				user, err := utils.UnmarshalStruct[User](v)

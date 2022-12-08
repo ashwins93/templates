@@ -1,110 +1,71 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+	"errors"
 	"log"
+	"time"
 
+	"github.com/ashwins93/fiber-badger/db"
+	"github.com/ashwins93/fiber-badger/routes"
 	"github.com/dgraph-io/badger/v3"
+	"github.com/goccy/go-json"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
-type list struct {
-	Name      string `json:"name"`
-	TodoCount int    `json:"todoCount"`
-}
-
-type Store struct {
-	db *badger.DB
-}
-
-func (s *Store) createListForUser(username string, listname string) {
-	err := s.db.Update(func(txn *badger.Txn) error {
-		key := fmt.Sprintf("user/%s/list/%s", username, listname)
-		listMeta := list{
-			Name:      listname,
-			TodoCount: 0,
-		}
-		val, _ := json.Marshal(listMeta)
-		return txn.Set([]byte(key), val)
-	})
-
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func (s *Store) getListById(username string, listname string) (*list, error) {
-	var result list
-	err := s.db.View(func(txn *badger.Txn) error {
-		key := fmt.Sprintf("user/%s/list/%s", username, listname)
-		item, err := txn.Get([]byte(key))
-		if err != nil {
-			return err
-		}
-		err = item.Value(func(val []byte) error {
-			return json.Unmarshal(val, &result)
-		})
-		return err
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return &result, nil
-}
-
-func (s *Store) getAllListForUser(username string) ([]*list, error) {
-	result := make([]*list, 0)
-	err := s.db.View(func(txn *badger.Txn) error {
-		it := txn.NewIterator(badger.DefaultIteratorOptions)
-		defer it.Close()
-		prefix := []byte(fmt.Sprintf("user/%s/list/", username))
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			item := it.Item()
-			err := item.Value(func(v []byte) error {
-				list := list{}
-				err := json.Unmarshal(v, &list)
-				result = append(result, &list)
-				return err
-			})
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return result, nil
-}
-
 func main() {
-	db, err := badger.Open(badger.DefaultOptions("./badger"))
+	badger, err := badger.Open(badger.DefaultOptions("./badger"))
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
-	s := &Store{db}
+	defer badger.Close()
+	s := db.NewDb(badger)
 
-	// list1, err := s.getListById("ashwin", "list1")
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
+	app := fiber.New(fiber.Config{
+		JSONEncoder:  json.Marshal,
+		JSONDecoder:  json.Unmarshal,
+		ErrorHandler: errorHandler,
+	})
+	app.Use(recover.New())
+	app.Use(logger.New())
 
-	// fmt.Printf("%v\n", list1)
+	server := routes.NewService(s, app)
 
-	// s.createListForUser("ashwin", "list1")
-	// s.createListForUser("ashwin", "list2")
-	// s.createListForUser("ashwin", "list3")
+	server.SetupV1Routes()
 
-	allLists, _ := s.getAllListForUser("ashwin")
-
-	for i, v := range allLists {
-		fmt.Printf("===========\nItem %d\n=========\n%v\n===========\n", i+1, v)
+	if err = app.Listen(":3000"); err != nil {
+		log.Fatal(err)
 	}
 
+	app.Hooks().OnShutdown(func() error {
+		return badger.Close()
+	})
+
+	go gcRunner(badger)
+}
+
+func gcRunner(db *badger.DB) {
+	ticker := time.NewTicker(time.Minute * 5)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		var err error
+		for err == nil {
+			err = db.RunValueLogGC(0.7)
+		}
+	}
+}
+
+func errorHandler(c *fiber.Ctx, err error) error {
+	code := fiber.StatusInternalServerError
+
+	var e *fiber.Error
+	if errors.As(err, &e) {
+		code = e.Code
+	}
+
+	return c.Status(code).JSON(&fiber.Map{
+		"message": e.Message,
+	})
 }
