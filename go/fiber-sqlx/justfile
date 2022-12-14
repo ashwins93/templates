@@ -1,0 +1,17 @@
+migrateup:
+  dbmate up
+
+migratedown:
+  dbmate down
+
+migratetest:
+  dbmate --url "sqlite:./db/test.db" up
+
+migratetestdown:
+  dbmate --url "sqlite:./db/test.db" down
+
+rollback:
+  dbmate rollback
+
+build:
+  go build -o bin/www .
